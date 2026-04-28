@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Lucianos MidiApp"/>
+<title>Lucianos MidiApp</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:#060b14;color:#e2e8f0;font-family:-apple-system,'Helvetica Neue',sans-serif;max-width:430px;margin:0 auto}
+input,select,button{font-family:inherit;font-size:15px}
+input[type=time]::-webkit-calendar-picker-indicator{filter:invert(1)}
+select option{background:#1e293b}
+.card{background:#0f172a;border-radius:16px;padding:16px;margin-bottom:10px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .2s}
+.input{width:100%;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:10px 14px;color:#e2e8f0;font-size:15px;outline:none}
+.label{display:block;font-size:12px;font-weight:600;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
+.btn-pri{padding:12px 20px;border-radius:12px;border:none;cursor:pointer;font-size:15px;font-weight:700}
+.btn-sec{padding:10px 16px;border-radius:10px;border:1px solid #334155;background:none;color:#94a3b8;cursor:pointer;font-size:14px}
+.btn-del{padding:10px 14px;border-radius:10px;border:none;background:#1e293b;color:#ef4444;cursor:pointer;font-size:16px}
+.sec-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px}
+@keyframes pulse{0%,100%{box-shadow:0 0 40px rgba(74,222,128,.25)}50%{box-shadow:0 0 80px rgba(74,222,128,.5)}}
+#app{padding-bottom:100px}
+::-webkit-scrollbar{width:0}
+</style>
+</head>
+<body><div id="app"></div>
+<script>
+var MEDS_KEY='lm-meds',LOG_KEY='lm-log';
+var meds=[],logData={},view='today',editMed=null,activeAlarm=null;
+var firedAlarms=[];
+try{meds=JSON.parse(localStorage.getItem(MEDS_KEY)||'[]')}catch(e){}
+try{logData=JSON.parse(localStorage.getItem(LOG_KEY)||'{}')}catch(e){}
+function saveMeds(){try{localStorage.setItem(MEDS_KEY,JSON.stringify(meds))}catch(e){}}
+function saveLog(){try{localStorage.setItem(LOG_KEY,JSON.stringify(logData))}catch(e){}}
+function genId(){return Math.random().toString(36).substr(2,9)}
+function todayIdx(){return(new Date().getDay()+6)%7}
+function todayKey(){return new Date().toISOString().split('T')[0]}
+var WDAYS=['Mo','Di','Mi','Do','Fr','Sa','So'];
+var WFULL=['Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag','Sonntag'];
+var INTERVALS=[{l:'Täglich',v:'daily'},{l:'Jeden 2. Tag',v:'every2'},{l:'Jeden 3. Tag',v:'every3'},{l:'Wöchentlich',v:'weekly'},{l:'Bestimmte Wochentage',v:'weekdays'}];
+var UNITS=['mg','ml','µg','Stk.','Tropfen','IE'];
+var ALARM_OPTS=[{l:'Pünktlich',v:0},{l:'5 min vorher',v:5},{l:'10 min vorher',v:10},{l:'15 min vorher',v:15},{l:'30 min vorher',v:30}];
+var COLORS=['#4ade80','#60a5fa','#f97316','#e879f9','#facc15','#fb7185','#34d399','#a78bfa'];
+function isDueToday(med){
+if(med.interval==='daily')return true;
+if(med.interval==='every2'||med.interval==='every3'){
+if(!med.startDate)return true;
+var diff=Math.floor((new Date()-new Date(med.startDate))/86400000);
+return diff%(med.interval==='every2'?2:3)===0;}
+if(med.interval==='weekly'){if(!med.startDate)return false;
+return Math.floor((new Date()-new Date(med.startDate))/86400000)%7===0;}
+if(med.interval==='weekdays')return(med.weekdays||[]).indexOf(todayIdx())>=0;
+return false;}
+function isTaken(medId,time){return!!((logData[todayKey()]||{})[medId+'_'+time])}
+function toggleTaken(medId,time){
+var k=todayKey(),ek=medId+'_'+time;
+if(!logData[k])logData[k]={};
+logData[k][ek]=!logData[k][ek];
+saveLog();render();}
+if('Notification'in window&&Notification.permission==='default')Notification.requestPermission();
+function playBeep(){try{
+var ctx=new(window.AudioContext||window.webkitAudioContext)();
+[[880,0,.15],[880,.2,.15],[1100,.4,.25]].forEach(function(x){
+var o=ctx.createOscillator(),g=ctx.createGain();
+o.connect(g);g.connect(ctx.destination);
+o.type='sine';o.frequency.value=x[0];
+g.gain.setValueAtTime(0,ctx.currentTime+x[1]);
+g.gain.linearRampToValueAtTime(.4,ctx.currentTime+x[1]+.05);
+g.gain.linearRampToValueAtTime(0,ctx.currentTime+x[1]+x[2]);
+o.start(ctx.currentTime+x[1]);o.stop(ctx.currentTime+x[1]+x[2]+.05);});}catch(e){}}
+function sendNotif(med,time){
+if(!('Notification'in window)||Notification.permission!=='granted')return;
+var n=new Notification('Zeit fuer '+med.name,{body:med.dose+' '+med.unit+' - '+time+' Uhr',tag:'med-'+med.id+'-'+time,requireInteraction:true});
+n.onclick=function(){window.focus();n.close()};}
+function checkAlarms(){
+var now=new Date(),k=todayKey(),nowM=now.getHours()*60+now.getMinutes();
+meds.forEach(function(med){
+if(!med.alarmEnabled||!isDueToday(med))return;
+(med.times||[]).forEach(function(time){
+var parts=time.split(':'),at=parseInt(parts[0])*60+parseInt(parts[1])-(med.alarmMinsBefore||0);
+var fk=k+'_'+med.id+'_'+time;
+if(isTaken(med.id,time)||firedAlarms.indexOf(fk)>=0)return;
+if(nowM>=at&&nowM<=at+2){firedAlarms.push(fk);playBeep();sendNotif(med,time);activeAlarm={med:med,time:time};render();}});})}
+setInterval(checkAlarms,10000);
+var form=resetForm();
+function resetForm(med){return{name:med?med.name||'':'',dose:med?med.dose||'':'',unit:med?med.unit||'mg':'mg',times:med?med.times||['08:00']:['08:00'],interval:med?med.interval||'daily':'daily',weekdays:med?med.weekdays||[]:[], startDate:med?med.startDate||todayKey():todayKey(),color:med?med.color||'#4ade80':'#4ade80',notes:med?med.notes||'':'',alarmEnabled:med&&med.alarmEnabled!=null?med.alarmEnabled:true,alarmMinsBefore:med&&med.alarmMinsBefore!=null?med.alarmMinsBefore:0};}
+function e(tag,attrs,children){var el=document.createElement(tag);if(attrs)Object.keys(attrs).forEach(function(k){var v=attrs[k];if(k==='style'&&typeof v==='object')Object.assign(el.style,v);else if(k==='className')el.className=v;else if(k.indexOf('on')===0)el.addEventListener(k.slice(2).toLowerCase(),v);else el.setAttribute(k,v);});if(children)children.forEach(function(c){if(c!=null&&c!==false)el.append(c)});return el;}
+function d(style,children){return e('div',{style:style},children)}
+function t(text,style){var el=document.createElement('div');el.textContent=text;if(style)Object.assign(el.style,style);return el}
+function getSchedule(){var now=new Date(),ns=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');var all=[];meds.filter(isDueToday).forEach(function(med){(med.times||[]).forEach(function(time){all.push({med:med,time:time,taken:isTaken(med.id,time)})})});all.sort(function(a,b​​​​​​​​​​​​​​​​
